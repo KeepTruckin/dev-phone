@@ -26,6 +26,15 @@ describe('utils/ownership.ownershipFor', () => {
         expect(ownership.ownerDisplay).to.equal('alice@gomotive.com');
     });
 
+    it('parses owner from the short local-part dev-phone webhook URL', () => {
+        const ownership = ownershipFor({
+            voiceUrl: 'https://dev-phone-andre-santos.twil.io/incoming-call',
+        });
+        expect(ownership.state).to.equal('taken');
+        expect(ownership.ownerSlug).to.equal('andre-santos');
+        expect(ownership.ownerDisplay).to.equal('andre-santos');
+    });
+
     it('classifies as taken when only smsUrl is a dev-phone URL', () => {
         const ownership = ownershipFor({
             voiceUrl: '',

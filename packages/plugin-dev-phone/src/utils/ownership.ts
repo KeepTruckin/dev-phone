@@ -10,14 +10,14 @@
  *
  * The `owner` field is the raw slug as parsed from the URL — not a
  * reconstructed email — so call sites that need to compare ownership against
- * the current caller must use `slugEmail(callerEmail)` (or `emailsMatch`)
- * rather than string-compare reconstructed emails. The `ownerDisplay` field
- * is the best-effort decoded email purely for UI rendering.
+ * the current caller must compare against the same slug format used by the
+ * dev-phone name. The `ownerDisplay` field is the best-effort decoded email
+ * or short local-part name purely for UI rendering.
  */
 
 import { unslugEmail } from './identity';
 
-const DEV_PHONE_URL_RE = /https?:\/\/dev-phone-([a-z0-9-]+?)-[a-z0-9]{4,}\./i;
+const DEV_PHONE_URL_RE = /https?:\/\/dev-phone-([a-z0-9-]+)\./i;
 const DEV_PHONE_PREFIX_RE = /https?:\/\/dev-phone-/i;
 
 // Twilio sets these on freshly-purchased numbers; treat them as "unset".
@@ -36,6 +36,17 @@ type ChannelClassification =
     | { kind: 'dev-phone'; ownerSlug?: string }
     | { kind: 'external' };
 
+function ownerSlugFromDevPhoneHost(rawSlug: string): string | undefined {
+    if (/^[a-z0-9]{4}$/.test(rawSlug)) return undefined;
+
+    if (rawSlug.includes('-at-')) {
+        const oldRandomSuffixMatch = rawSlug.match(/^(.+)-[a-z0-9]{4,}$/);
+        return oldRandomSuffixMatch ? oldRandomSuffixMatch[1] : rawSlug;
+    }
+
+    return rawSlug;
+}
+
 function classifyUrl(url: string | null | undefined): ChannelClassification {
     if (!url || TWILIO_DEMO_URLS.has(url)) {
         return { kind: 'unset' };
@@ -43,7 +54,7 @@ function classifyUrl(url: string | null | undefined): ChannelClassification {
 
     const match = url.match(DEV_PHONE_URL_RE);
     if (match) {
-        return { kind: 'dev-phone', ownerSlug: match[1] };
+        return { kind: 'dev-phone', ownerSlug: ownerSlugFromDevPhoneHost(match[1]) };
     }
     if (DEV_PHONE_PREFIX_RE.test(url)) {
         // dev-phone-shaped URL but the slug wasn't parseable (e.g. configured

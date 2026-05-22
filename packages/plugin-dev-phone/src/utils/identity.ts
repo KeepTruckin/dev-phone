@@ -91,6 +91,16 @@ export function slugEmail(email: string): string {
         .replace(/^-+|-+$/g, '');
 }
 
+export function slugEmailLocalPart(email: string): string {
+    const localPart = email.split('@')[0] || email;
+    return localPart
+        .toLowerCase()
+        .replace(/[._+]+/g, '-')
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-+|-+$/g, '');
+}
+
 /**
  * Inverse of `slugEmail` for slugs we generated ourselves. Round-trips emails
  * that only use `.`, `+`, `_`, `-`, and `@`. Returns the slug unchanged when

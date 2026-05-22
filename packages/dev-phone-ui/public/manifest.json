@@ -1,6 +1,6 @@
 {
-  "short_name": "Dev Phone - Twilio Labs",
-  "name": "A developer browser phone to test your Twilio applications.",
+  "short_name": "Motive Dev Phone",
+  "name": "A Motive developer browser phone for testing calls and messages.",
   "icons": [],
   "start_url": ".",
   "display": "standalone",

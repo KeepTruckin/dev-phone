@@ -6,6 +6,7 @@ const { expect } = require('chai');
 const {
     getCallerEmail,
     slugEmail,
+    slugEmailLocalPart,
     unslugEmail,
     emailsMatch,
     shortRandom,
@@ -114,6 +115,13 @@ describe('utils/identity', () => {
         it('returns false for empty inputs', () => {
             expect(emailsMatch('', 'alice@gomotive.com')).to.equal(false);
             expect(emailsMatch('alice@gomotive.com', '')).to.equal(false);
+        });
+    });
+
+    describe('slugEmailLocalPart', () => {
+        it('returns a short DNS-safe slug from the email local part', () => {
+            expect(slugEmailLocalPart('andre.santos@keeptruckin.com')).to.equal('andre-santos');
+            expect(slugEmailLocalPart('Alice.QA+test@Gomotive.com')).to.equal('alice-qa-test');
         });
     });
 
