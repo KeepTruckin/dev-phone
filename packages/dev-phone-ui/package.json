@@ -1,7 +1,7 @@
 {
-  "name": "@twilio-labs/dev-phone-ui",
-  "version": "1.0.0-beta.3",
-  "description": "A react-based UI for the Twilio CLI softphone plugin",
+  "name": "@motive/dev-phone-ui",
+  "version": "1.0.0-motive.1",
+  "description": "Motive Dev Phone — React UI for the Twilio CLI softphone plugin",
   "main": "dist/index.html",
   "scripts": {
     "build": "rm -rf dist && webpack --config webpack.prod.config.js --mode production",
@@ -49,7 +49,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/twilio-labs/dev-phone.git"
+    "url": "git+https://github.com/KeepTruckin/dev-phone.git"
   },
   "keywords": [
     "soft",
@@ -60,7 +60,7 @@
     "twilio"
   ],
   "bugs": {
-    "url": "https://github.com/twilio-labs/dev-phone/issues"
+    "url": "https://github.com/KeepTruckin/dev-phone/issues"
   },
-  "homepage": "https://github.com/twilio-labs/dev-phone#readme"
+  "homepage": "https://github.com/KeepTruckin/dev-phone#readme"
 }

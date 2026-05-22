@@ -8,9 +8,11 @@ import { Flags } from '@oclif/core';
 import { deployServerless, constants } from '../utils/create-serverless-util';
 import { getAvailablePort, isValidPort } from '../utils/helpers'
 import { isSmsUrlSet, isVoiceUrlSet, updatePhoneWebhooks, removePhoneWebhooks } from '../utils/phone-number-utils';
+import { getCallerEmail, slugEmail, shortRandom } from '../utils/identity';
+import { ownershipFor } from '../utils/ownership';
 const { TwilioClientCommand } = require('@twilio/cli-core').baseCommands;
 const { TwilioCliError } = require('@twilio/cli-core').services.error;
-const WebClientPath = path.resolve(require.resolve('@twilio-labs/dev-phone-ui'), '..')
+const WebClientPath = path.resolve(require.resolve('@motive/dev-phone-ui'), '..')
 const { version } = require('../../package.json');
 
 // Types
@@ -26,18 +28,31 @@ const VoiceGrant = AccessToken.VoiceGrant;
 const SyncGrant = AccessToken.SyncGrant;
 const CALL_LOG_MAP_NAME = 'CallLog'
 
+// Motive: the dev-phone is locked to a single Twilio subaccount. The SID is
+// supplied by the `mtv dev-phone` wrapper (which reads it from an SSM
+// parameter at runtime) and passed in via MOTIVE_DEV_PHONE_SUBACCOUNT_SID.
+// Never hardcode the SID here — it would land in source-control history and
+// trip the org-wide secret-scanning rules.
+const EXPECTED_SUBACCOUNT_SID = process.env.MOTIVE_DEV_PHONE_SUBACCOUNT_SID || '';
+
 // removes unecessary properties to standardize the twilio phone number
 const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[]) => {
     return {
         "phone-numbers": twilioResponse.map(
             ({ phoneNumber, friendlyName, smsUrl, voiceUrl, sid }) =>
-                ({ phoneNumber, friendlyName, smsUrl, voiceUrl, sid }))
+                ({
+                    phoneNumber,
+                    friendlyName,
+                    smsUrl,
+                    voiceUrl,
+                    sid,
+                    ownership: ownershipFor({ smsUrl, voiceUrl }),
+                }))
     }
 }
 
-const generateRandomPhoneName = () => {
-    let rand = Math.random().toString().substring(2, 6)
-    return `dev-phone-${rand}`;
+const generatePhoneName = (email: string) => {
+    return `dev-phone-${slugEmail(email)}-${shortRandom()}`;
 }
 
 class DevPhoneServer extends TwilioClientCommand {
@@ -49,19 +64,54 @@ class DevPhoneServer extends TwilioClientCommand {
         this.jwt = null;
         this.apikey = {};
         this.twimlApp = {};
-        this.devPhoneName = generateRandomPhoneName();
+        // Motive: filled in once we resolve the caller's Okta email in run().
+        this.devPhoneName = '';
+        this.callerEmail = '';
         this.voiceUrl = null;
         this.smsUrl = null;
         this.voiceOutboundUrl = null;
     }
 
     async run() {
+        // Motive: resolve identity before talking to Twilio. We need this for
+        // every resource we'll create, so failing fast here keeps the Twilio
+        // account clean if the user forgot to run `mtv dev-phone`.
+        const callerEmail = getCallerEmail();
+        if (!callerEmail) {
+            console.error(
+                '\n❌ No Motive Okta identity found.\n' +
+                '   Set MOTIVE_OKTA_EMAIL or run: mtv dev-phone\n',
+            );
+            process.exit(1);
+        }
+        this.callerEmail = callerEmail;
+        this.devPhoneName = generatePhoneName(callerEmail);
+
+        if (!EXPECTED_SUBACCOUNT_SID) {
+            console.error(
+                '\n❌ MOTIVE_DEV_PHONE_SUBACCOUNT_SID is not set.\n' +
+                '   The dev-phone plugin must be launched via `mtv dev-phone`, which fetches\n' +
+                '   the SID from AWS SSM Parameter Store and exports it for the plugin.\n',
+            );
+            process.exit(1);
+        }
+
         await super.run();
+
+        // Motive: refuse to run against any account other than the locked subaccount.
+        if (this.twilioClient.accountSid !== EXPECTED_SUBACCOUNT_SID) {
+            console.error(
+                `\n❌ dev-phone is locked to subaccount ${EXPECTED_SUBACCOUNT_SID}.\n` +
+                `   Current Twilio profile points at ${this.twilioClient.accountSid}.\n` +
+                `   Run: mtv dev-phone\n`,
+            );
+            process.exit(1);
+        }
 
         const props = this.parseProperties() || {};
         await this.validatePropsAndFlags(props, this.flags)
 
-        console.log(`Hello 👋 I'm your dev-phone and my name is ${this.devPhoneName}\n`)
+        console.log(`Hello 👋 ${this.callerEmail} — your dev-phone is "${this.devPhoneName}"\n`)
 
         // set user agent header on twilio client
         this.twilioClient.userAgentExtensions = [
@@ -152,6 +202,8 @@ class DevPhoneServer extends TwilioClientCommand {
             res.json({
                 ...this.cliSettings,
                 devPhoneName: this.devPhoneName,
+                currentUserEmail: this.callerEmail,
+                subaccountSid: EXPECTED_SUBACCOUNT_SID,
                 conversation: this.conversation
             });
         })
@@ -195,6 +247,21 @@ class DevPhoneServer extends TwilioClientCommand {
 
                 // Should only have a single number
                 if (selectedNumber.length === 1) {
+                    // Motive: refuse to overwrite a number actively owned by another engineer.
+                    const ownership = selectedNumber[0].ownership;
+                    if (
+                        ownership.state === 'taken' &&
+                        ownership.owner &&
+                        ownership.owner !== this.callerEmail
+                    ) {
+                        console.warn(`Refused to steal ${selectedNumber[0].phoneNumber} from ${ownership.owner}`);
+                        return res.status(409).json({
+                            error: 'in_use_by',
+                            owner: ownership.owner,
+                            message: `In use by ${ownership.owner}. Pick a different number.`,
+                        });
+                    }
+
                     await removePhoneWebhooks(this.cliSettings.phoneNumber, this.twilioClient.incomingPhoneNumbers);
                     this.cliSettings.phoneNumber = selectedNumber[0];
                     this.cliSettings.phoneNumber = await updatePhoneWebhooks(this.cliSettings.phoneNumber,this.twilioClient.incomingPhoneNumbers, {voiceUrl: this.voiceUrl, smsUrl: this.smsUrl, statusCallback: this.statusCallback} );

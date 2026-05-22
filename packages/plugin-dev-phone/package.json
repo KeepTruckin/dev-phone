@@ -1,15 +1,15 @@
 {
-  "name": "@twilio-labs/plugin-dev-phone",
-  "description": "Twilio Dev Phone",
-  "version": "1.0.0-beta.6",
-  "author": "Twilio @twilio",
+  "name": "@motive/plugin-dev-phone",
+  "description": "Motive Dev Phone — Twilio CLI plugin locked to the Motive subaccount",
+  "version": "1.0.0-motive.1",
+  "author": "Motive Developer Tools",
   "bugs": {
-    "url": "https://github.com/twilio-labs/dev-phone/issues"
+    "url": "https://github.com/KeepTruckin/dev-phone/issues"
   },
   "dependencies": {
     "@inquirer/confirm": "^5.1.8",
     "@oclif/core": "^1.13.6",
-    "@twilio-labs/dev-phone-ui": "^1.0.0-beta.3",
+    "@motive/dev-phone-ui": "^1.0.0-motive.1",
     "@twilio-labs/serverless-api": "^5.4.0",
     "@twilio/cli-core": "^7.0.0",
     "express": "^4.17.1",
@@ -39,7 +39,7 @@
     "/oclif.manifest.json",
     "/dist"
   ],
-  "homepage": "https://github.com/twilio-labs/dev-phone/packages/dev-phone",
+  "homepage": "https://github.com/KeepTruckin/dev-phone/tree/main/packages/plugin-dev-phone",
   "keywords": [
     "oclif-plugin"
   ],
@@ -60,7 +60,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/twilio-labs/dev-phone.git"
+    "url": "git+https://github.com/KeepTruckin/dev-phone.git"
   },
   "scripts": {
     "build": "tsc",
