@@ -1,6 +1,5 @@
 import path from 'path';
 import fs from 'fs';
-import os from 'os';
 import open from 'open';
 import express from 'express';
 import confirm from '@inquirer/confirm';
@@ -36,9 +35,11 @@ const CALL_LOG_MAP_NAME = 'CallLog'
 // trip the org-wide secret-scanning rules.
 const EXPECTED_SUBACCOUNT_SID = process.env.MOTIVE_DEV_PHONE_SUBACCOUNT_SID || '';
 
-// Persists the generated API key across dev-phone instances so we don't
-// accumulate a new key on every launch.
-const DEV_PHONE_API_KEY_FILE = path.join(os.homedir(), '.config', 'motive', 'dev-phone-apikey.json');
+const SUPPORT_RUNBOOK_URL = 'https://k2labs.atlassian.net/wiki/spaces/AM/pages/6610124943/Testing+SMS+Flows';
+const SUPPORT_SLACK_CHANNEL = '#eng-customer-platform-support';
+const SUPPORT_FOOTER =
+    `\n💬 Need help? Slack: ${SUPPORT_SLACK_CHANNEL}\n` +
+    `   Runbook: ${SUPPORT_RUNBOOK_URL}\n`;
 
 // Decorates ownership with `isYou` based on slug comparison against the
 // caller. We do the comparison server-side so the UI doesn't need to know how
@@ -66,8 +67,13 @@ const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[], caller
     }
 }
 
+// Use the full email slug (not just the local part) so engineers with the same
+// local-part on different domains — or local-parts that normalize to the same
+// slug — get distinct Twilio resource names. Matches the documented webhook
+// format `dev-phone-<email-slug>-<rand>.twil.io` after Twilio appends the
+// serverless deployment suffix.
 const generatePhoneName = (email: string) => {
-    return `dev-phone-${slugEmailLocalPart(email)}`;
+    return `dev-phone-${slugEmail(email)}`;
 }
 
 class DevPhoneServer extends TwilioClientCommand {
@@ -95,7 +101,8 @@ class DevPhoneServer extends TwilioClientCommand {
         if (!callerEmail) {
             console.error(
                 '\n❌ No Motive Okta identity found.\n' +
-                '   Set MOTIVE_OKTA_EMAIL or run: mtv dev-phone\n',
+                '   Set MOTIVE_OKTA_EMAIL or run: mtv dev-phone\n' +
+                SUPPORT_FOOTER,
             );
             process.exit(1);
         }
@@ -106,7 +113,8 @@ class DevPhoneServer extends TwilioClientCommand {
             console.error(
                 '\n❌ MOTIVE_DEV_PHONE_SUBACCOUNT_SID is not set.\n' +
                 '   The dev-phone plugin must be launched via `mtv dev-phone`, which fetches\n' +
-                '   the SID from AWS SSM Parameter Store and exports it for the plugin.\n',
+                '   the SID from AWS SSM Parameter Store and exports it for the plugin.\n' +
+                SUPPORT_FOOTER,
             );
             process.exit(1);
         }
@@ -118,7 +126,8 @@ class DevPhoneServer extends TwilioClientCommand {
             console.error(
                 `\n❌ dev-phone is locked to subaccount ${EXPECTED_SUBACCOUNT_SID}.\n` +
                 `   Current Twilio profile points at ${this.twilioClient.accountSid}.\n` +
-                `   Run: mtv dev-phone\n`,
+                `   Run: mtv dev-phone\n` +
+                SUPPORT_FOOTER,
             );
             process.exit(1);
         }
@@ -126,7 +135,9 @@ class DevPhoneServer extends TwilioClientCommand {
         const props = this.parseProperties() || {};
         await this.validatePropsAndFlags(props, this.flags)
 
-        console.log(`Hello 👋 ${this.callerEmail} — your dev-phone is "${this.devPhoneName}"\n`)
+        console.log(`Hello 👋 ${this.callerEmail} — your dev-phone is "${this.devPhoneName}"`)
+        console.log(`   Subaccount: ${EXPECTED_SUBACCOUNT_SID}`)
+        console.log(SUPPORT_FOOTER)
 
         // Tag every Twilio API call with our fork identifier so Twilio-side
         // logs/telemetry show the Motive fork (and version) instead of the
@@ -474,9 +485,9 @@ class DevPhoneServer extends TwilioClientCommand {
         // need to create a new one
 
         if (this.twilioCliIsConfiguredWithApiKey()) {
-            // This case is if the user has _not_ used env vars for
-            // their creds. Here we can reuse the api keys and secret
-            // that the CLI created when it was installed
+            // mtv-managed path: the Twilio CLI profile already has an API
+            // key+secret (secret stored in the OS keychain). Reuse it so we
+            // don't accumulate keys on every launch.
 
             console.log("✅ I'm using your profile API key.\n");
             return {
@@ -485,12 +496,10 @@ class DevPhoneServer extends TwilioClientCommand {
             }
 
         } else {
-            // This case is if the user has started the CLI with
-            // $TWILIO_ACCOUNT_SID and $TWILIO_AUTH_TOKEN set in
-            // their environment, using their account creds but
-            // their API_KEY and SECRET are not properly set.
-            // the CLI uses the ACCOUNT_SID into currentProfile.apiKey
-            // and we need to generate another key
+            // Fallback path: caller is using $TWILIO_ACCOUNT_SID and
+            // $TWILIO_AUTH_TOKEN env vars without an API-key-backed CLI
+            // profile. Create a per-run key and clean it up at shutdown
+            // (destroyApiKeys) so the secret never lands on disk.
 
             const mask = (value: string): string => {
                 if (!value) return "";
@@ -498,21 +507,12 @@ class DevPhoneServer extends TwilioClientCommand {
                 return `${"*".repeat(value.length - 4)}${last4}`;
             };
 
-            const persisted = this.loadPersistedApiKey();
-            if (persisted) {
-                console.log(`✅ I'm reusing existing API Key ${mask(persisted.sid)}\n`);
-                this.currentProfile.apiKey = persisted.sid;
-                this.currentProfile.apiSecret = persisted.secret;
-                return persisted;
-            }
-
             console.log("💻 I'm creating a new API Key...");
+            await this.destroyApiKeys();
             try {
-                const stableName = `dev-phone-${slugEmail(this.callerEmail)}`;
-                const key = await this.twilioClient.newKeys.create({ friendlyName: stableName });
+                const key = await this.twilioClient.newKeys.create({ friendlyName: this.devPhoneName });
                 console.log(`✅ I'm using the API Key ${mask(key.sid)}\n`);
 
-                this.savePersistedApiKey(key.sid, key.secret);
                 this.currentProfile.apiKey = key.sid;
                 this.currentProfile.apiSecret = key.secret;
                 return {
@@ -520,43 +520,34 @@ class DevPhoneServer extends TwilioClientCommand {
                     secret: key.secret
                 }
             } catch (err) {
-                console.error(err)
+                throw new TwilioCliError(
+                    `Failed to create a Twilio API key for the dev-phone: ${(err as Error).message}\n` +
+                    SUPPORT_FOOTER
+                );
             }
         }
     }
 
-    loadPersistedApiKey(): { sid: string; secret: string } | null {
-        try {
-            if (!fs.existsSync(DEV_PHONE_API_KEY_FILE)) return null;
-            const data = JSON.parse(fs.readFileSync(DEV_PHONE_API_KEY_FILE, 'utf8'));
-            if (data?.sid && data?.secret) return data;
-        } catch {
-            // corrupted file — fall through to create a new key
-        }
-        return null;
-    }
-
-    savePersistedApiKey(sid: string, secret: string) {
-        try {
-            fs.mkdirSync(path.dirname(DEV_PHONE_API_KEY_FILE), { recursive: true });
-            fs.writeFileSync(DEV_PHONE_API_KEY_FILE, JSON.stringify({ sid, secret }), { mode: 0o600 });
-        } catch (err) {
-            console.error('Warning: could not save API key to disk:', err);
-        }
-    }
-
-    clearPersistedApiKey() {
-        try {
-            if (fs.existsSync(DEV_PHONE_API_KEY_FILE)) fs.unlinkSync(DEV_PHONE_API_KEY_FILE);
-        } catch {
-            // best-effort
-        }
-    }
-
     async destroyApiKeys() {
-        // Key is intentionally kept alive across instances so the next launch
-        // can reuse it (see loadPersistedApiKey). destroyAllApiKeys (--clear)
-        // is the only path that removes it.
+        if (this.twilioCliIsConfiguredWithApiKey()) {
+            // CLI-profile path: the key is owned by the profile, not this run.
+            return;
+        }
+        try {
+            const keys = await this.twilioClient.keys.list()
+            const devPhoneKeys = keys.filter((key: KeyInstance) => {
+                return key.friendlyName !== null && key.friendlyName.startsWith(this.devPhoneName)
+            })
+
+            if (devPhoneKeys.length > 0) {
+                console.log(`🚮 Removing API Keys for ${this.devPhoneName}`);
+                for (const key of devPhoneKeys) {
+                    await this.twilioClient.keys(key.sid).remove();
+                }
+            }
+        } catch (err) {
+            console.error(err)
+        }
     }
 
     async destroyAllApiKeys() {
@@ -577,8 +568,6 @@ class DevPhoneServer extends TwilioClientCommand {
                         await this.twilioClient.keys(key.sid).remove();
                     }
                 }
-
-                this.clearPersistedApiKey();
             } catch (err) {
                 console.error(err)
             }

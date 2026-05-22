@@ -73,6 +73,14 @@ When the picker lists numbers from the subaccount, each entry includes an `owner
 
 The server enforces the same rule: `POST /choose-phone-number` returns HTTP 409 if you try to claim a number owned by someone else.
 
+## Support
+
+- Slack: `#eng-customer-platform-support`
+- Runbook (Confluence): [Testing SMS Flows](https://k2labs.atlassian.net/wiki/spaces/AM/pages/6610124943/Testing+SMS+Flows)
+- File bugs: [github.com/KeepTruckin/dev-phone/issues](https://github.com/KeepTruckin/dev-phone/issues)
+
+The CLI prints these links on startup and on every fatal-error path so you don't have to remember them.
+
 ## Contributing
 
 See [DEVELOPMENT.md](DEVELOPMENT.md). [MOTIVE-INTEGRATION.md](MOTIVE-INTEGRATION.md) at the repo root captures the architectural rationale for the Motive-specific changes (subaccount lock, ownership classifier, mtv wrapper).

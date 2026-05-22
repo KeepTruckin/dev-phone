@@ -37,14 +37,20 @@ type ChannelClassification =
     | { kind: 'external' };
 
 function ownerSlugFromDevPhoneHost(rawSlug: string): string | undefined {
-    if (/^[a-z0-9]{4}$/.test(rawSlug)) return undefined;
+    // Twilio serverless appends a 4-char [a-z0-9] suffix to the service
+    // friendlyName when forming the deployment domain
+    // (`dev-phone-andre-santos` → `dev-phone-andre-santos-9xq2.twil.io`).
+    // Strip it so the parsed slug matches what slugEmail / slugEmailLocalPart
+    // produce for the same caller.
+    const suffixMatch = rawSlug.match(/^(.+)-[a-z0-9]{4}$/);
+    const slug = suffixMatch ? suffixMatch[1] : rawSlug;
 
-    if (rawSlug.includes('-at-')) {
-        const oldRandomSuffixMatch = rawSlug.match(/^(.+)-[a-z0-9]{4,}$/);
-        return oldRandomSuffixMatch ? oldRandomSuffixMatch[1] : rawSlug;
-    }
+    // upstream's anonymous random-name format (`dev-phone-1234[-xxxx].twil.io`)
+    // collapses to a bare 4-char slug after suffix stripping; not
+    // owner-attributable.
+    if (/^[a-z0-9]{4}$/.test(slug)) return undefined;
 
-    return rawSlug;
+    return slug;
 }
 
 function classifyUrl(url: string | null | undefined): ChannelClassification {

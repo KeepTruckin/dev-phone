@@ -35,6 +35,15 @@ describe('utils/ownership.ownershipFor', () => {
         expect(ownership.ownerDisplay).to.equal('andre-santos');
     });
 
+    it('strips the Twilio serverless random suffix from a local-part slug', () => {
+        const ownership = ownershipFor({
+            voiceUrl: 'https://dev-phone-andre-santos-9xq2.twil.io/incoming-call',
+        });
+        expect(ownership.state).to.equal('taken');
+        expect(ownership.ownerSlug).to.equal('andre-santos');
+        expect(ownership.ownerDisplay).to.equal('andre-santos');
+    });
+
     it('classifies as taken when only smsUrl is a dev-phone URL', () => {
         const ownership = ownershipFor({
             voiceUrl: '',
