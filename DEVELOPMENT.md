@@ -5,6 +5,19 @@
 You will need:
  - Node development environment (node, npm, npx)
  - Twilio CLI
+ - A Twilio CLI profile against the locked Motive testing subaccount. The quickest path is `mtv dev-phone login`, which writes a profile named `dev-phone`. Alternatively, run `twilio profiles:create` manually with the subaccount SID, API key, and secret you fetch from AWS SSM Parameter Store (`/dev-phone/prvw/use1/core/account-sid`, `…/api-key-sid`, `…/api-secret`).
+ - `MOTIVE_OKTA_EMAIL` set in your environment, or a `~/.config/motive/dev-phone.env` file containing `MOTIVE_OKTA_EMAIL=<your-email>` — `mtv dev-phone` writes this for you. The plugin refuses to start without it.
+
+### Targeting a different subaccount
+
+For local development against a non-default subaccount (for example a staging or EU subaccount), set both:
+
+```bash
+export MOTIVE_DEV_PHONE_SUBACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export TWILIO_ACTIVE_PROFILE=<your custom profile>
+```
+
+The plugin only checks `MOTIVE_DEV_PHONE_SUBACCOUNT_SID === twilioClient.accountSid`, so as long as the active Twilio CLI profile points at the same subaccount, you're good.
 
 ## Set up and run locally
 

@@ -1,29 +1,86 @@
-# dev-phone
+# dev-phone (Motive fork)
 
-A developer tool for testing SMS and Voice applications.
+A developer tool for testing SMS and Voice flows against Motive's testing Twilio subaccount.
 
-![A mock up of the dev phone UI](https://user-images.githubusercontent.com/8594375/167843260-ea78e367-8533-48e8-a90e-b287eb0ad588.gif)
+This is the Motive fork of [twilio-labs/dev-phone](https://github.com/twilio-labs/dev-phone). It adds:
 
+- A hard **subaccount lock** so the tool only ever talks to the Motive subaccount.
+- **Okta-stamped resource naming** so every dev-phone session is attributable to a real engineer.
+- A phone-number **ownership indicator** in the picker. Each number is labeled `free`, `yours`, `taken by <email>`, or `external webhook`. Numbers actively in use by another engineer's dev-phone are disabled in the dropdown and the server returns HTTP 409 if anything tries to steal them.
 
-This is a monorepo that contains two Dev Phone packages:
+The monorepo contains two packages:
 
-* the Dev Phone plugin, which uses the Twilio CLI to deploy Twilio account resources and launch a local development server to host the Dev Phone UI
-* The Dev Phone UI, the user interface for the Dev Phone. It is a react app that is tightly coupled with the CLI plugin
+* `@motive/plugin-dev-phone` — the Twilio CLI plugin (deploys account resources + serves the UI).
+* `@motive/dev-phone-ui` — the React UI tightly coupled to the plugin.
 
-## Use the Dev Phone
+## Quick start
 
-To use the Dev Phone, you'll need to first have [an up-to-date installation of the Twilio CLI](https://www.twilio.com/docs/twilio-cli/getting-started/install), as well as access to a spare Twilio phone number. That means that [you'll need an upgraded Twilio account](https://support.twilio.com/hc/en-us/articles/223183208-Upgrading-to-a-paid-Twilio-Account?_ga=2.24955578.160882329.1650457443-360531395.1625234680), not a trial account.
+Run the wrapper from [`local-dev`](https://github.com/KeepTruckin/local-dev):
 
-Once you've installed the Twilio CLI, you're ready to add the Dev Phone plugin with the following command:
+```bash
+mtv dev-phone
+```
 
-`twilio plugins:install @twilio-labs/plugin-dev-phone`
+That single command:
 
-Once it's installed, you can run the Dev Phone with the following command:
+1. Installs the Twilio CLI and this plugin if missing (opt-in — bootstrap does **not** do this for you).
+2. Triggers `mtv aws auth` if your Okta-backed AWS credentials are stale.
+3. Fetches the subaccount SID + API key SID + secret from AWS SSM Parameter Store (`/dev-phone/prvw/use1/core/account-sid`, `…/api-key-sid`, `…/api-secret` in `mtv-nonproduction` / `us-east-1`).
+4. Writes a managed Twilio CLI profile named `dev-phone` (secret stored in the OS keychain — no plaintext on disk).
+5. Stamps the run with your Okta email and launches `twilio dev-phone`.
 
-`twilio dev-phone`
+Other actions:
 
-Check out the [Dev Phone documentation](https://www.twilio.com/docs/labs/dev-phone) to learn more about installing and using the Dev Phone.
+```bash
+mtv dev-phone install   # prefetch Twilio CLI + plugin without launching
+mtv dev-phone status    # show current install state, profile, cached identity
+mtv dev-phone login     # refresh the Twilio profile without launching
+mtv dev-phone logout    # remove the managed profile + cached identity
+```
 
-## Contribute to this plugin
+## Manual install (without mtv)
 
-Notes for folks working on this plugin are in [DEVELOPMENT.md](DEVELOPMENT.md).
+If you don't have `mtv` available, install the plugin directly and launch it via the Twilio CLI:
+
+```bash
+twilio plugins:install git+https://github.com/KeepTruckin/dev-phone.git#main
+twilio dev-phone
+```
+
+Prerequisites for the direct path:
+
+1. An active Twilio CLI profile configured against Motive's testing subaccount (its SID is stored in the SSM parameter `/dev-phone/prvw/use1/core/account-sid`; fetch with `mtv secret view us-east-1 prvw dev-phone core account-sid`). The plugin refuses to start against any other account.
+2. `MOTIVE_OKTA_EMAIL` set in the environment (e.g. `export MOTIVE_OKTA_EMAIL="$(whoami)@gomotive.com"`), or a `~/.config/motive/dev-phone.env` file containing `MOTIVE_OKTA_EMAIL=<your-email>`. This stamps every Twilio resource the plugin creates with your identity. `mtv dev-phone` writes this file for you.
+3. `MOTIVE_DEV_PHONE_SUBACCOUNT_SID` set in the environment to the subaccount SID the plugin should accept. `mtv dev-phone` exports this automatically from the SSM parameter.
+
+## Environment variables
+
+| Variable                          | Required by plugin | Purpose                                                    |
+| --------------------------------- | ------------------ | ---------------------------------------------------------- |
+| `MOTIVE_OKTA_EMAIL`               | Yes                | Caller's Okta email; stamps all Twilio resources.          |
+| `MOTIVE_DEV_PHONE_SUBACCOUNT_SID` | Yes                | Subaccount SID the plugin is allowed to talk to. Not hardcoded — sourced from SSM by the wrapper. |
+
+## How phone-number ownership works
+
+When the picker lists numbers from the subaccount, each entry includes an `ownership` field computed from the webhook URL configured on the number:
+
+| State              | Webhook                                              | UI                                              |
+| ------------------ | ---------------------------------------------------- | ----------------------------------------------- |
+| `free`             | No SMS / voice webhook set.                          | Green badge, selectable.                        |
+| `taken` (yours)    | `https://dev-phone-<your-email-slug>-<rand>.twil.io` | Yellow "yours" label, selectable.               |
+| `taken` (other)    | `https://dev-phone-<other-email-slug>-<rand>.twil.io`| Red "taken by <email>" label, **disabled**.     |
+| `taken-external`   | Any other URL.                                       | "external webhook", selectable with overwrite warning. |
+
+The server enforces the same rule: `POST /choose-phone-number` returns HTTP 409 if you try to claim a number owned by someone else.
+
+## Support
+
+- Slack: `#eng-customer-platform-support`
+- Runbook (Confluence): [Testing SMS Flows](https://k2labs.atlassian.net/wiki/spaces/AM/pages/6610124943/Testing+SMS+Flows)
+- File bugs: [github.com/KeepTruckin/dev-phone/issues](https://github.com/KeepTruckin/dev-phone/issues)
+
+The CLI prints these links on startup and on every fatal-error path so you don't have to remember them.
+
+## Contributing
+
+See [DEVELOPMENT.md](DEVELOPMENT.md). [MOTIVE-INTEGRATION.md](MOTIVE-INTEGRATION.md) at the repo root captures the architectural rationale for the Motive-specific changes (subaccount lock, ownership classifier, mtv wrapper).

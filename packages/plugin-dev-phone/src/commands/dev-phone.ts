@@ -8,9 +8,11 @@ import { Flags } from '@oclif/core';
 import { deployServerless, constants } from '../utils/create-serverless-util';
 import { getAvailablePort, isValidPort } from '../utils/helpers'
 import { isSmsUrlSet, isVoiceUrlSet, updatePhoneWebhooks, removePhoneWebhooks } from '../utils/phone-number-utils';
+import { getCallerEmail, slugEmail, slugEmailLocalPart } from '../utils/identity';
+import { ownershipFor, PnOwnership } from '../utils/ownership';
 const { TwilioClientCommand } = require('@twilio/cli-core').baseCommands;
 const { TwilioCliError } = require('@twilio/cli-core').services.error;
-const WebClientPath = path.resolve(require.resolve('@twilio-labs/dev-phone-ui'), '..')
+const WebClientPath = path.resolve(require.resolve('@motive/dev-phone-ui'), '..')
 const { version } = require('../../package.json');
 
 // Types
@@ -26,18 +28,52 @@ const VoiceGrant = AccessToken.VoiceGrant;
 const SyncGrant = AccessToken.SyncGrant;
 const CALL_LOG_MAP_NAME = 'CallLog'
 
+// Motive: the dev-phone is locked to a single Twilio subaccount. The SID is
+// supplied by the `mtv dev-phone` wrapper (which reads it from an SSM
+// parameter at runtime) and passed in via MOTIVE_DEV_PHONE_SUBACCOUNT_SID.
+// Never hardcode the SID here — it would land in source-control history and
+// trip the org-wide secret-scanning rules.
+const EXPECTED_SUBACCOUNT_SID = process.env.MOTIVE_DEV_PHONE_SUBACCOUNT_SID || '';
+
+const SUPPORT_RUNBOOK_URL = 'https://k2labs.atlassian.net/wiki/spaces/AM/pages/6610124943/Testing+SMS+Flows';
+const SUPPORT_SLACK_CHANNEL = '#eng-customer-platform-support';
+const SUPPORT_FOOTER =
+    `\n💬 Need help? Slack: ${SUPPORT_SLACK_CHANNEL}\n` +
+    `   Runbook: ${SUPPORT_RUNBOOK_URL}\n`;
+
+// Decorates ownership with `isYou` based on slug comparison against the
+// caller. We do the comparison server-side so the UI doesn't need to know how
+// to slug emails — it just consults the boolean.
+const decorateOwnership = (ownership: PnOwnership, callerEmail: string): PnOwnership & { isYou?: boolean } => {
+    if (ownership.state !== 'taken' || !ownership.ownerSlug) return ownership;
+    if (!callerEmail) return ownership;
+    const ownerSlugs = [slugEmail(callerEmail), slugEmailLocalPart(callerEmail)];
+    return { ...ownership, isYou: ownerSlugs.includes(ownership.ownerSlug) };
+};
+
 // removes unecessary properties to standardize the twilio phone number
-const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[]) => {
+const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[], callerEmail = '') => {
     return {
         "phone-numbers": twilioResponse.map(
             ({ phoneNumber, friendlyName, smsUrl, voiceUrl, sid }) =>
-                ({ phoneNumber, friendlyName, smsUrl, voiceUrl, sid }))
+                ({
+                    phoneNumber,
+                    friendlyName,
+                    smsUrl,
+                    voiceUrl,
+                    sid,
+                    ownership: decorateOwnership(ownershipFor({ smsUrl, voiceUrl }), callerEmail),
+                }))
     }
 }
 
-const generateRandomPhoneName = () => {
-    let rand = Math.random().toString().substring(2, 6)
-    return `dev-phone-${rand}`;
+// Use the full email slug (not just the local part) so engineers with the same
+// local-part on different domains — or local-parts that normalize to the same
+// slug — get distinct Twilio resource names. Matches the documented webhook
+// format `dev-phone-<email-slug>-<rand>.twil.io` after Twilio appends the
+// serverless deployment suffix.
+const generatePhoneName = (email: string) => {
+    return `dev-phone-${slugEmail(email)}`;
 }
 
 class DevPhoneServer extends TwilioClientCommand {
@@ -49,24 +85,66 @@ class DevPhoneServer extends TwilioClientCommand {
         this.jwt = null;
         this.apikey = {};
         this.twimlApp = {};
-        this.devPhoneName = generateRandomPhoneName();
+        // Motive: filled in once we resolve the caller's Okta email in run().
+        this.devPhoneName = '';
+        this.callerEmail = '';
         this.voiceUrl = null;
         this.smsUrl = null;
         this.voiceOutboundUrl = null;
     }
 
     async run() {
+        // Motive: resolve identity before talking to Twilio. We need this for
+        // every resource we'll create, so failing fast here keeps the Twilio
+        // account clean if the user forgot to run `mtv dev-phone`.
+        const callerEmail = getCallerEmail();
+        if (!callerEmail) {
+            console.error(
+                '\n❌ No Motive Okta identity found.\n' +
+                '   Set MOTIVE_OKTA_EMAIL or run: mtv dev-phone\n' +
+                SUPPORT_FOOTER,
+            );
+            process.exit(1);
+        }
+        this.callerEmail = callerEmail;
+        this.devPhoneName = generatePhoneName(callerEmail);
+
+        if (!EXPECTED_SUBACCOUNT_SID) {
+            console.error(
+                '\n❌ MOTIVE_DEV_PHONE_SUBACCOUNT_SID is not set.\n' +
+                '   The dev-phone plugin must be launched via `mtv dev-phone`, which fetches\n' +
+                '   the SID from AWS SSM Parameter Store and exports it for the plugin.\n' +
+                SUPPORT_FOOTER,
+            );
+            process.exit(1);
+        }
+
         await super.run();
+
+        // Motive: refuse to run against any account other than the locked subaccount.
+        if (this.twilioClient.accountSid !== EXPECTED_SUBACCOUNT_SID) {
+            console.error(
+                `\n❌ dev-phone is locked to subaccount ${EXPECTED_SUBACCOUNT_SID}.\n` +
+                `   Current Twilio profile points at ${this.twilioClient.accountSid}.\n` +
+                `   Run: mtv dev-phone\n` +
+                SUPPORT_FOOTER,
+            );
+            process.exit(1);
+        }
 
         const props = this.parseProperties() || {};
         await this.validatePropsAndFlags(props, this.flags)
 
-        console.log(`Hello 👋 I'm your dev-phone and my name is ${this.devPhoneName}\n`)
+        console.log(`Hello 👋 ${this.callerEmail} — your dev-phone is "${this.devPhoneName}"`)
+        console.log(`   Subaccount: ${EXPECTED_SUBACCOUNT_SID}`)
+        console.log(SUPPORT_FOOTER)
 
-        // set user agent header on twilio client
+        // Tag every Twilio API call with our fork identifier so Twilio-side
+        // logs/telemetry show the Motive fork (and version) instead of the
+        // upstream `@twilio-labs/*` strings.
         this.twilioClient.userAgentExtensions = [
-            `@twilio-labs/dev-phone/${version}`,
-            `@twilio-labs/dev-phone/helper-library`,
+            `@motive/dev-phone/${version}`,
+            `@motive/dev-phone/helper-library`,
             'serverless-functions'
         ]
 
@@ -152,6 +230,8 @@ class DevPhoneServer extends TwilioClientCommand {
             res.json({
                 ...this.cliSettings,
                 devPhoneName: this.devPhoneName,
+                currentUserEmail: this.callerEmail,
+                subaccountSid: EXPECTED_SUBACCOUNT_SID,
                 conversation: this.conversation
             });
         })
@@ -161,13 +241,13 @@ class DevPhoneServer extends TwilioClientCommand {
                 try {
                     const pns = await this.twilioClient.incomingPhoneNumbers.list()
                     this.pns = pns
-                    res.json(reformatTwilioPns(pns))
+                    res.json(reformatTwilioPns(pns, this.callerEmail))
                 } catch (err: any) {
                     console.error('Phone number API threw an error', err);
                     res.status(err.status ? err.status : 400).send({ error: err })
                 }
             } else {
-                res.json(reformatTwilioPns(this.pns));
+                res.json(reformatTwilioPns(this.pns, this.callerEmail));
             }
         })
 
@@ -191,10 +271,29 @@ class DevPhoneServer extends TwilioClientCommand {
             try {
                 const rawNumbers = await this.twilioClient.incomingPhoneNumbers
                     .list({ phoneNumber: req.body.phoneNumber, limit: 20 })
-                const selectedNumber = reformatTwilioPns(rawNumbers)["phone-numbers"];
+                const selectedNumber = reformatTwilioPns(rawNumbers, this.callerEmail)["phone-numbers"];
 
                 // Should only have a single number
                 if (selectedNumber.length === 1) {
+                    // Motive: refuse to overwrite a number actively owned by another engineer.
+                    // Slug-equality (not reconstructed-email equality) is the source of truth
+                    // — `unslugEmail` can be lossy if the original email contained chars
+                    // outside our token set.
+                    const ownership = selectedNumber[0].ownership;
+                    if (
+                        ownership.state === 'taken' &&
+                        ownership.ownerSlug &&
+                        !ownership.isYou
+                    ) {
+                        const ownerLabel = ownership.ownerDisplay || ownership.ownerSlug;
+                        console.warn(`Refused to steal ${selectedNumber[0].phoneNumber} from ${ownerLabel}`);
+                        return res.status(409).json({
+                            error: 'in_use_by',
+                            owner: ownerLabel,
+                            message: `In use by ${ownerLabel}. Pick a different number.`,
+                        });
+                    }
+
                     await removePhoneWebhooks(this.cliSettings.phoneNumber, this.twilioClient.incomingPhoneNumbers);
                     this.cliSettings.phoneNumber = selectedNumber[0];
                     this.cliSettings.phoneNumber = await updatePhoneWebhooks(this.cliSettings.phoneNumber,this.twilioClient.incomingPhoneNumbers, {voiceUrl: this.voiceUrl, smsUrl: this.smsUrl, statusCallback: this.statusCallback} );
@@ -354,7 +453,7 @@ class DevPhoneServer extends TwilioClientCommand {
                 );
             }
 
-            this.cliSettings.phoneNumber = reformatTwilioPns(this.pns)["phone-numbers"][0];
+            this.cliSettings.phoneNumber = reformatTwilioPns(this.pns, this.callerEmail)["phone-numbers"][0];
 
         }
 
@@ -386,9 +485,9 @@ class DevPhoneServer extends TwilioClientCommand {
         // need to create a new one
 
         if (this.twilioCliIsConfiguredWithApiKey()) {
-            // This case is if the user has _not_ used env vars for
-            // their creds. Here we can reuse the api keys and secret
-            // that the CLI created when it was installed
+            // mtv-managed path: the Twilio CLI profile already has an API
+            // key+secret (secret stored in the OS keychain). Reuse it so we
+            // don't accumulate keys on every launch.
 
             console.log("✅ I'm using your profile API key.\n");
             return {
@@ -397,57 +496,57 @@ class DevPhoneServer extends TwilioClientCommand {
             }
 
         } else {
-            // This case is if the user has started the CLI with
-            // $TWILIO_ACCOUNT_SID and $TWILIO_AUTH_TOKEN set in
-            // their environment, using their account creds but
-            // their API_KEY and SECRET are not properly set.
-            // the CLI uses the ACCOUNT_SID into currentProfile.apiKey
-            // and we need to generate another key
+            // Fallback path: caller is using $TWILIO_ACCOUNT_SID and
+            // $TWILIO_AUTH_TOKEN env vars without an API-key-backed CLI
+            // profile. Create a per-run key and clean it up at shutdown
+            // (destroyApiKeys) so the secret never lands on disk.
+
+            const mask = (value: string): string => {
+                if (!value) return "";
+                const last4 = value.slice(-4);
+                return `${"*".repeat(value.length - 4)}${last4}`;
+            };
 
             console.log("💻 I'm creating a new API Key...");
-            await this.destroyApiKeys()
+            await this.destroyApiKeys();
             try {
                 const key = await this.twilioClient.newKeys.create({ friendlyName: this.devPhoneName });
-                const mask = (value: string): string => {
-                  if (!value) return "";
-                  const last4 = value.slice(-4);
-                  return `${"*".repeat(value.length - 4)}${last4}`;
-                };
                 console.log(`✅ I'm using the API Key ${mask(key.sid)}\n`);
 
                 this.currentProfile.apiKey = key.sid;
                 this.currentProfile.apiSecret = key.secret;
                 return {
-                    sid: this.currentProfile.apiKey,
-                    secret: this.currentProfile.apiSecret
+                    sid: key.sid,
+                    secret: key.secret
                 }
             } catch (err) {
-                console.error(err)
+                throw new TwilioCliError(
+                    `Failed to create a Twilio API key for the dev-phone: ${(err as Error).message}\n` +
+                    SUPPORT_FOOTER
+                );
             }
         }
     }
 
     async destroyApiKeys() {
-
         if (this.twilioCliIsConfiguredWithApiKey()) {
-            // we never created one
-            return
-        } else {
-            try {
-                const keys = await this.twilioClient.keys.list()
-                const devPhoneKeys = keys.filter((key: KeyInstance) => {
-                    return key.friendlyName !== null && key.friendlyName.startsWith(this.devPhoneName)
-                })
+            // CLI-profile path: the key is owned by the profile, not this run.
+            return;
+        }
+        try {
+            const keys = await this.twilioClient.keys.list()
+            const devPhoneKeys = keys.filter((key: KeyInstance) => {
+                return key.friendlyName !== null && key.friendlyName.startsWith(this.devPhoneName)
+            })
 
-                if(devPhoneKeys.length > 0) {
-                    console.log(`🚮 Removing API Keys for ${this.devPhoneName}`);
-                    for (const key of devPhoneKeys) {
-                        await this.twilioClient.keys(key.sid).remove();
-                    }
+            if (devPhoneKeys.length > 0) {
+                console.log(`🚮 Removing API Keys for ${this.devPhoneName}`);
+                for (const key of devPhoneKeys) {
+                    await this.twilioClient.keys(key.sid).remove();
                 }
-            } catch (err) {
-                console.error(err)
             }
+        } catch (err) {
+            console.error(err)
         }
     }
 
