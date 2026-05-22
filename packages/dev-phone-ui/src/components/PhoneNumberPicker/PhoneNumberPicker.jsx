@@ -1,5 +1,4 @@
 import { useState, useEffect } from "react";
-import { useSelector } from "react-redux";
 
 import { Anchor, Box, Button, Heading, Label, Option, Select, Stack, Alert, Text, SkeletonLoader, Paragraph, Card } from "@twilio-paste/core";
 import WelcomeDialog from "./WelcomeDialog";
@@ -24,8 +23,8 @@ const hasExistingConfig = (pn) => {
   return hasExistingSmsConfig(pn) || hasExistingVoiceConfig(pn);
 };
 
-const getSelectLabelForPn = (pn, currentUserEmail) => {
-  const badge = badgeLabelFor(pn.ownership, currentUserEmail);
+const getSelectLabelForPn = (pn) => {
+  const badge = badgeLabelFor(pn.ownership);
   const badgeText = badge ? ` — ${badge}` : "";
   return `${pn.phoneNumber} [${pn.friendlyName}]${badgeText}`;
 };
@@ -40,11 +39,11 @@ const sortByOwnershipThenAlphabetically = (pn1, pn2) => {
   return pn1.phoneNumber.localeCompare(pn2.phoneNumber);
 };
 
-const firstSelectableNumber = (pns, currentUserEmail) => {
-  return pns.find((pn) => !isDisabledForCurrentUser(pn.ownership, currentUserEmail)) || pns[0];
+const firstSelectableNumber = (pns) => {
+  return pns.find((pn) => !isDisabledForCurrentUser(pn.ownership)) || pns[0];
 };
 
-const numPicker = async (currentNum, selectNum, getAvailableNums, currentUserEmail) => {
+const numPicker = async (currentNum, selectNum, getAvailableNums) => {
   if (!currentNum) {
     try {
       const response = await fetch('/phone-numbers')
@@ -52,7 +51,7 @@ const numPicker = async (currentNum, selectNum, getAvailableNums, currentUserEma
       data["phone-numbers"].sort(sortByOwnershipThenAlphabetically)
       getAvailableNums(data["phone-numbers"]);
       if (data["phone-numbers"].length !== 0) {
-        const first = firstSelectableNumber(data["phone-numbers"], currentUserEmail);
+        const first = firstSelectableNumber(data["phone-numbers"]);
         if (first) {
           selectNum(getPnDetailsByNumber(first.phoneNumber, data["phone-numbers"]));
         }
@@ -82,11 +81,10 @@ function PhoneNumberPickerContainer({ children }) {
 function PhoneNumberPicker({ configureNumberInUse, phoneNumbers }) {
   const [twilioPns, setTwilioPns] = useState(null);
   const [selectedPn, setSelectedPn] = useState(null);
-  const currentUserEmail = useSelector((state) => state.channelData?.currentUserEmail || "");
 
   useEffect(() => {
-    numPicker(selectedPn, setSelectedPn, setTwilioPns, currentUserEmail);
-  }, [selectedPn, currentUserEmail]);
+    numPicker(selectedPn, setSelectedPn, setTwilioPns);
+  }, [selectedPn]);
 
   if (twilioPns === null) {
     return (<SkeletonLoader height={"size50"} />)
@@ -126,14 +124,14 @@ function PhoneNumberPicker({ configureNumberInUse, phoneNumbers }) {
             }
           >
             {twilioPns.map((pn) => {
-              const disabled = isDisabledForCurrentUser(pn.ownership, currentUserEmail);
+              const disabled = isDisabledForCurrentUser(pn.ownership);
               return (
                 <Option
                   key={pn.phoneNumber}
                   value={pn.phoneNumber}
                   disabled={disabled}
                 >
-                  {getSelectLabelForPn(pn, currentUserEmail)}
+                  {getSelectLabelForPn(pn)}
                 </Option>
               );
             })}
@@ -142,14 +140,14 @@ function PhoneNumberPicker({ configureNumberInUse, phoneNumbers }) {
 
         {selectedPn ? (
           <Stack orientation="vertical" spacing="space60">
-            {isDisabledForCurrentUser(selectedPn.ownership, currentUserEmail) ? (
+            {isDisabledForCurrentUser(selectedPn.ownership) ? (
               <Alert variant="error">
-                This number is in use by {selectedPn.ownership.owner}'s dev-phone. Pick a different number.
+                This number is in use by {selectedPn.ownership.ownerDisplay || selectedPn.ownership.ownerSlug}'s dev-phone. Pick a different number.
               </Alert>
             ) : hasExistingConfig(selectedPn) ? (
               <Stack orientation="vertical" spacing="space30">
                 <Alert variant="warning">
-                  {selectedPn.ownership?.state === OWNERSHIP_STATES.TAKEN
+                  {selectedPn.ownership?.state === OWNERSHIP_STATES.TAKEN && selectedPn.ownership?.isYou
                     ? "This number was previously configured by your dev-phone. Selecting it will refresh the webhooks."
                     : "This phone number has existing config which will be overwritten"}
                 </Alert>
@@ -170,7 +168,7 @@ function PhoneNumberPicker({ configureNumberInUse, phoneNumbers }) {
 
             <Button
               variant="primary"
-              disabled={isDisabledForCurrentUser(selectedPn.ownership, currentUserEmail)}
+              disabled={isDisabledForCurrentUser(selectedPn.ownership)}
               onClick={(e) => configureNumberInUse(selectedPn)}
             >
               Use this phone number

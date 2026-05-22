@@ -1,38 +1,56 @@
 const { expect } = require('chai');
 const { ownershipFor } = require('../../dist/utils/ownership');
 
+const DEMO_SMS = 'https://demo.twilio.com/welcome/sms/reply';
+const DEMO_VOICE = 'https://demo.twilio.com/welcome/voice/';
+
 describe('utils/ownership.ownershipFor', () => {
-    it('returns "free" when neither voiceUrl nor smsUrl is set', () => {
+    it('returns "free" when both URLs are unset', () => {
         expect(ownershipFor({})).to.deep.equal({ state: 'free' });
         expect(ownershipFor({ voiceUrl: '', smsUrl: null })).to.deep.equal({ state: 'free' });
     });
 
+    it('treats Twilio demo URLs as unset (free)', () => {
+        expect(ownershipFor({ voiceUrl: DEMO_VOICE, smsUrl: DEMO_SMS }))
+            .to.deep.equal({ state: 'free' });
+        expect(ownershipFor({ voiceUrl: DEMO_VOICE })).to.deep.equal({ state: 'free' });
+        expect(ownershipFor({ smsUrl: DEMO_SMS })).to.deep.equal({ state: 'free' });
+    });
+
     it('parses owner from a Motive-shaped dev-phone webhook URL', () => {
         const ownership = ownershipFor({
-            voiceUrl: 'https://dev-phone-alice-at-gomotive-com-9xq2.twil.io/incoming-call',
-        });
-        expect(ownership).to.deep.equal({
-            state: 'taken',
-            owner: 'alice@gomotive.com',
-        });
-    });
-
-    it('falls back to voiceUrl when only voice is set', () => {
-        const ownership = ownershipFor({
-            voiceUrl: 'https://dev-phone-bob-at-gomotive-com-abcd.twil.io/incoming-call',
-            smsUrl: null,
+            voiceUrl: 'https://dev-phone-alice-at-gomotive-dot-com-9xq2.twil.io/incoming-call',
         });
         expect(ownership.state).to.equal('taken');
-        expect(ownership.owner).to.equal('bob@gomotive.com');
+        expect(ownership.ownerSlug).to.equal('alice-at-gomotive-dot-com');
+        expect(ownership.ownerDisplay).to.equal('alice@gomotive.com');
     });
 
-    it('falls back to smsUrl when voiceUrl is missing', () => {
+    it('classifies as taken when only smsUrl is a dev-phone URL', () => {
         const ownership = ownershipFor({
             voiceUrl: '',
-            smsUrl: 'https://dev-phone-bob-at-gomotive-com-abcd.twil.io/incoming-message',
+            smsUrl: 'https://dev-phone-bob-at-gomotive-dot-com-abcd.twil.io/incoming-message',
         });
         expect(ownership.state).to.equal('taken');
-        expect(ownership.owner).to.equal('bob@gomotive.com');
+        expect(ownership.ownerDisplay).to.equal('bob@gomotive.com');
+    });
+
+    it('classifies as taken when one channel is dev-phone and the other is the Twilio demo', () => {
+        const ownership = ownershipFor({
+            voiceUrl: DEMO_VOICE,
+            smsUrl: 'https://dev-phone-bob-at-gomotive-dot-com-abcd.twil.io/incoming-message',
+        });
+        expect(ownership.state).to.equal('taken');
+        expect(ownership.ownerDisplay).to.equal('bob@gomotive.com');
+    });
+
+    it('prefers a dev-phone classification over taken-external when one channel is each', () => {
+        const ownership = ownershipFor({
+            voiceUrl: 'https://example.com/twilio/voice',
+            smsUrl: 'https://dev-phone-bob-at-gomotive-dot-com-abcd.twil.io/incoming-message',
+        });
+        expect(ownership.state).to.equal('taken');
+        expect(ownership.ownerDisplay).to.equal('bob@gomotive.com');
     });
 
     it('returns "taken" without owner for dev-phone URLs whose slug is unparseable', () => {
@@ -44,10 +62,12 @@ describe('utils/ownership.ownershipFor', () => {
         expect(ownership).to.deep.equal({ state: 'taken' });
     });
 
-    it('returns "taken-external" for non-dev-phone webhook URLs', () => {
-        const ownership = ownershipFor({
-            voiceUrl: 'https://example.com/twilio/voice',
-        });
-        expect(ownership).to.deep.equal({ state: 'taken-external' });
+    it('returns "taken-external" when only non-dev-phone webhooks are configured', () => {
+        expect(ownershipFor({ voiceUrl: 'https://example.com/twilio/voice' }))
+            .to.deep.equal({ state: 'taken-external' });
+        expect(ownershipFor({
+            voiceUrl: 'https://example.com/voice',
+            smsUrl: 'https://example.com/sms',
+        })).to.deep.equal({ state: 'taken-external' });
     });
 });

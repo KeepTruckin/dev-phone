@@ -71,27 +71,51 @@ function readEmailFromFile(envFile: string): string | null {
  * Returns an email-derived slug that is safe to embed in Twilio friendly names,
  * webhook hostnames, and oclif resource identifiers.
  *
- * `alice@gomotive.com` → `alice-at-gomotive-com`
+ * The encoding is round-trip-safe for the characters Motive emails actually
+ * use: `.`, `+`, `_`, `-`, and `@`. Each is replaced with a distinctive token
+ * so `unslugEmail` can reverse it without ambiguity.
+ *
+ * `first.last+work@gomotive.com` → `first-dot-last-plus-work-at-gomotive-dot-com`
  */
 export function slugEmail(email: string): string {
     return email
         .toLowerCase()
         .replace(/@/g, '-at-')
-        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/\./g, '-dot-')
+        .replace(/\+/g, '-plus-')
+        .replace(/_/g, '-underscore-')
+        // Anything else (e.g. unicode in display names that ended up here)
+        // collapses to a single hyphen so we still produce valid DNS labels.
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/-{2,}/g, '-')
         .replace(/^-+|-+$/g, '');
 }
 
 /**
- * Inverse of `slugEmail` for slugs we generated ourselves. Recovers the
- * original email when given a slug like `alice-at-gomotive-com`; returns
- * the slug unchanged if the `-at-` marker is missing.
+ * Inverse of `slugEmail` for slugs we generated ourselves. Round-trips emails
+ * that only use `.`, `+`, `_`, `-`, and `@`. Returns the slug unchanged when
+ * the `-at-` marker is missing.
  */
 export function unslugEmail(slug: string): string {
     const idx = slug.lastIndexOf('-at-');
     if (idx === -1) return slug;
-    const local = slug.slice(0, idx);
-    const domain = slug.slice(idx + '-at-'.length).replace(/-/g, '.');
-    return `${local}@${domain}`;
+    const decode = (s: string) =>
+        s
+            .replace(/-dot-/g, '.')
+            .replace(/-plus-/g, '+')
+            .replace(/-underscore-/g, '_');
+    return `${decode(slug.slice(0, idx))}@${decode(slug.slice(idx + '-at-'.length))}`;
+}
+
+/**
+ * Returns true when two emails canonicalize to the same slug. Use this
+ * instead of comparing reconstructed emails directly — `unslugEmail` can lose
+ * information for emails that contained characters outside our token set, so
+ * slug equality is the source of truth.
+ */
+export function emailsMatch(a: string, b: string): boolean {
+    if (!a || !b) return false;
+    return slugEmail(a) === slugEmail(b);
 }
 
 /**

@@ -1,11 +1,15 @@
 /**
- * Ownership helpers shared between the PhoneNumberPicker UI and any unit tests.
+ * Ownership helpers shared between the PhoneNumberPicker UI and unit tests.
  *
- * The server side (`/phone-numbers`) attaches an `ownership` field to each
- * number describing whether it is `free`, `taken` (by a Motive engineer's
- * running dev-phone), or `taken-external` (configured by some non-dev-phone
- * webhook). These helpers turn that into display strings and Paste Badge
- * variants.
+ * The server (`/phone-numbers`) attaches an `ownership` object to each number:
+ *
+ *   { state: "free" }
+ *   { state: "taken", ownerSlug, ownerDisplay, isYou }
+ *   { state: "taken-external" }
+ *
+ * The UI never compares emails itself — that's the server's job, since only
+ * the server canonically knows the caller's Okta email and how to slug it.
+ * The UI just reads `isYou` and `ownerDisplay`.
  */
 
 export const OWNERSHIP_STATES = Object.freeze({
@@ -15,19 +19,19 @@ export const OWNERSHIP_STATES = Object.freeze({
 });
 
 /**
- * Returns true when the number is owned by another engineer and should be
- * unselectable in the dropdown. Same-owner case is allowed (the engineer
- * reconnecting to a number their previous session left configured).
+ * Returns true when the Option should be unselectable: another engineer's
+ * running dev-phone owns the number. Returns false when the owner is the
+ * current caller, when no owner could be parsed, or when the number is free /
+ * has a non-dev-phone webhook.
  */
-export function isDisabledForCurrentUser(ownership, currentUserEmail) {
+export function isDisabledForCurrentUser(ownership) {
     if (!ownership || ownership.state !== OWNERSHIP_STATES.TAKEN) return false;
-    if (!ownership.owner) return false; // unknown owner — let the user proceed (likely a stale dev-phone)
-    return ownership.owner !== currentUserEmail;
+    if (!ownership.ownerSlug) return false; // unknown owner; let the user proceed
+    if (ownership.isYou) return false;
+    return true;
 }
 
-/**
- * Paste Badge `variant` for the ownership state.
- */
+/** Paste Badge `variant` for the ownership state. */
 export function badgeVariantFor(ownership) {
     switch (ownership?.state) {
         case OWNERSHIP_STATES.FREE:
@@ -41,28 +45,28 @@ export function badgeVariantFor(ownership) {
     }
 }
 
-/**
- * Short label rendered in the dropdown Option next to the phone number.
- */
-export function badgeLabelFor(ownership, currentUserEmail) {
+/** Short label rendered in the dropdown Option next to the phone number. */
+export function badgeLabelFor(ownership) {
     if (!ownership) return "";
     switch (ownership.state) {
         case OWNERSHIP_STATES.FREE:
             return "free";
         case OWNERSHIP_STATES.TAKEN_EXTERNAL:
             return "external webhook";
-        case OWNERSHIP_STATES.TAKEN:
-            if (!ownership.owner) return "taken";
-            if (ownership.owner === currentUserEmail) return "yours";
-            return `taken by ${ownership.owner}`;
+        case OWNERSHIP_STATES.TAKEN: {
+            if (ownership.isYou) return "yours";
+            const owner = ownership.ownerDisplay || ownership.ownerSlug;
+            return owner ? `taken by ${owner}` : "taken";
+        }
         default:
             return "";
     }
 }
 
 /**
- * Sort order for the dropdown: free first, then external webhooks (still
- * selectable), then numbers taken by others (disabled), then unknown.
+ * Sort order for the dropdown: free first (selectable + idle), then external
+ * webhooks (selectable with warning), then your own numbers (selectable,
+ * marked "yours"), then numbers taken by others (disabled).
  */
 export function ownershipSortRank(ownership) {
     switch (ownership?.state) {
@@ -71,8 +75,8 @@ export function ownershipSortRank(ownership) {
         case OWNERSHIP_STATES.TAKEN_EXTERNAL:
             return 1;
         case OWNERSHIP_STATES.TAKEN:
-            return 2;
+            return ownership.isYou ? 2 : 3;
         default:
-            return 3;
+            return 4;
     }
 }

@@ -7,6 +7,7 @@ const {
     getCallerEmail,
     slugEmail,
     unslugEmail,
+    emailsMatch,
     shortRandom,
     DEV_PHONE_ENV_FILE,
 } = require('../../dist/utils/identity');
@@ -68,20 +69,51 @@ describe('utils/identity', () => {
     });
 
     describe('slugEmail / unslugEmail', () => {
-        it('round-trips a simple email', () => {
-            const slug = slugEmail('alice@gomotive.com');
-            expect(slug).to.equal('alice-at-gomotive-com');
-            expect(unslugEmail(slug)).to.equal('alice@gomotive.com');
-        });
+        const roundTripCases = [
+            ['alice@gomotive.com', 'alice-at-gomotive-dot-com'],
+            ['first.last@gomotive.com', 'first-dot-last-at-gomotive-dot-com'],
+            ['alice+qa@gomotive.com', 'alice-plus-qa-at-gomotive-dot-com'],
+            ['ada_lovelace@gomotive.com', 'ada-underscore-lovelace-at-gomotive-dot-com'],
+            ['Alice.QA+test@Gomotive.com', 'alice-dot-qa-plus-test-at-gomotive-dot-com'],
+        ];
 
-        it('lowercases and strips uncommon characters', () => {
-            expect(slugEmail('Alice.QA+test@Gomotive.com')).to.equal(
-                'alice-qa-test-at-gomotive-com',
-            );
+        roundTripCases.forEach(([email, expectedSlug]) => {
+            it(`encodes ${email} as ${expectedSlug}`, () => {
+                expect(slugEmail(email)).to.equal(expectedSlug);
+            });
+
+            it(`round-trips ${email} via unslugEmail`, () => {
+                // Note: round-trip lower-cases — that's expected; emails are
+                // case-insensitive and we treat them as such throughout.
+                expect(unslugEmail(slugEmail(email))).to.equal(email.toLowerCase());
+            });
         });
 
         it('returns the slug unchanged when no -at- marker is present', () => {
             expect(unslugEmail('weird-slug')).to.equal('weird-slug');
+        });
+    });
+
+    describe('emailsMatch', () => {
+        it('matches identical emails', () => {
+            expect(emailsMatch('alice@gomotive.com', 'alice@gomotive.com')).to.equal(true);
+        });
+
+        it('matches case-insensitively', () => {
+            expect(emailsMatch('Alice@Gomotive.com', 'alice@gomotive.com')).to.equal(true);
+        });
+
+        it('matches emails with dots / plus / underscore', () => {
+            expect(emailsMatch('first.last+test@gomotive.com', 'first.last+test@gomotive.com')).to.equal(true);
+        });
+
+        it('does not match different locals', () => {
+            expect(emailsMatch('first.last@gomotive.com', 'first-last@gomotive.com')).to.equal(false);
+        });
+
+        it('returns false for empty inputs', () => {
+            expect(emailsMatch('', 'alice@gomotive.com')).to.equal(false);
+            expect(emailsMatch('alice@gomotive.com', '')).to.equal(false);
         });
     });
 

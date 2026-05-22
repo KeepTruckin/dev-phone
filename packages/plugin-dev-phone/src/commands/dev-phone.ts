@@ -9,7 +9,7 @@ import { deployServerless, constants } from '../utils/create-serverless-util';
 import { getAvailablePort, isValidPort } from '../utils/helpers'
 import { isSmsUrlSet, isVoiceUrlSet, updatePhoneWebhooks, removePhoneWebhooks } from '../utils/phone-number-utils';
 import { getCallerEmail, slugEmail, shortRandom } from '../utils/identity';
-import { ownershipFor } from '../utils/ownership';
+import { ownershipFor, PnOwnership } from '../utils/ownership';
 const { TwilioClientCommand } = require('@twilio/cli-core').baseCommands;
 const { TwilioCliError } = require('@twilio/cli-core').services.error;
 const WebClientPath = path.resolve(require.resolve('@motive/dev-phone-ui'), '..')
@@ -35,8 +35,17 @@ const CALL_LOG_MAP_NAME = 'CallLog'
 // trip the org-wide secret-scanning rules.
 const EXPECTED_SUBACCOUNT_SID = process.env.MOTIVE_DEV_PHONE_SUBACCOUNT_SID || '';
 
+// Decorates ownership with `isYou` based on slug comparison against the
+// caller. We do the comparison server-side so the UI doesn't need to know how
+// to slug emails — it just consults the boolean.
+const decorateOwnership = (ownership: PnOwnership, callerEmail: string): PnOwnership & { isYou?: boolean } => {
+    if (ownership.state !== 'taken' || !ownership.ownerSlug) return ownership;
+    if (!callerEmail) return ownership;
+    return { ...ownership, isYou: ownership.ownerSlug === slugEmail(callerEmail) };
+};
+
 // removes unecessary properties to standardize the twilio phone number
-const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[]) => {
+const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[], callerEmail = '') => {
     return {
         "phone-numbers": twilioResponse.map(
             ({ phoneNumber, friendlyName, smsUrl, voiceUrl, sid }) =>
@@ -46,7 +55,7 @@ const reformatTwilioPns = (twilioResponse: IncomingPhoneNumberInstance[]) => {
                     smsUrl,
                     voiceUrl,
                     sid,
-                    ownership: ownershipFor({ smsUrl, voiceUrl }),
+                    ownership: decorateOwnership(ownershipFor({ smsUrl, voiceUrl }), callerEmail),
                 }))
     }
 }
@@ -113,10 +122,12 @@ class DevPhoneServer extends TwilioClientCommand {
 
         console.log(`Hello 👋 ${this.callerEmail} — your dev-phone is "${this.devPhoneName}"\n`)
 
-        // set user agent header on twilio client
+        // Tag every Twilio API call with our fork identifier so Twilio-side
+        // logs/telemetry show the Motive fork (and version) instead of the
+        // upstream `@twilio-labs/*` strings.
         this.twilioClient.userAgentExtensions = [
-            `@twilio-labs/dev-phone/${version}`,
-            `@twilio-labs/dev-phone/helper-library`,
+            `@motive/dev-phone/${version}`,
+            `@motive/dev-phone/helper-library`,
             'serverless-functions'
         ]
 
@@ -213,13 +224,13 @@ class DevPhoneServer extends TwilioClientCommand {
                 try {
                     const pns = await this.twilioClient.incomingPhoneNumbers.list()
                     this.pns = pns
-                    res.json(reformatTwilioPns(pns))
+                    res.json(reformatTwilioPns(pns, this.callerEmail))
                 } catch (err: any) {
                     console.error('Phone number API threw an error', err);
                     res.status(err.status ? err.status : 400).send({ error: err })
                 }
             } else {
-                res.json(reformatTwilioPns(this.pns));
+                res.json(reformatTwilioPns(this.pns, this.callerEmail));
             }
         })
 
@@ -243,22 +254,26 @@ class DevPhoneServer extends TwilioClientCommand {
             try {
                 const rawNumbers = await this.twilioClient.incomingPhoneNumbers
                     .list({ phoneNumber: req.body.phoneNumber, limit: 20 })
-                const selectedNumber = reformatTwilioPns(rawNumbers)["phone-numbers"];
+                const selectedNumber = reformatTwilioPns(rawNumbers, this.callerEmail)["phone-numbers"];
 
                 // Should only have a single number
                 if (selectedNumber.length === 1) {
                     // Motive: refuse to overwrite a number actively owned by another engineer.
+                    // Slug-equality (not reconstructed-email equality) is the source of truth
+                    // — `unslugEmail` can be lossy if the original email contained chars
+                    // outside our token set.
                     const ownership = selectedNumber[0].ownership;
                     if (
                         ownership.state === 'taken' &&
-                        ownership.owner &&
-                        ownership.owner !== this.callerEmail
+                        ownership.ownerSlug &&
+                        !ownership.isYou
                     ) {
-                        console.warn(`Refused to steal ${selectedNumber[0].phoneNumber} from ${ownership.owner}`);
+                        const ownerLabel = ownership.ownerDisplay || ownership.ownerSlug;
+                        console.warn(`Refused to steal ${selectedNumber[0].phoneNumber} from ${ownerLabel}`);
                         return res.status(409).json({
                             error: 'in_use_by',
-                            owner: ownership.owner,
-                            message: `In use by ${ownership.owner}. Pick a different number.`,
+                            owner: ownerLabel,
+                            message: `In use by ${ownerLabel}. Pick a different number.`,
                         });
                     }
 
@@ -421,7 +436,7 @@ class DevPhoneServer extends TwilioClientCommand {
                 );
             }
 
-            this.cliSettings.phoneNumber = reformatTwilioPns(this.pns)["phone-numbers"][0];
+            this.cliSettings.phoneNumber = reformatTwilioPns(this.pns, this.callerEmail)["phone-numbers"][0];
 
         }
 
